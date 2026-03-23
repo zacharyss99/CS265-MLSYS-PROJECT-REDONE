@@ -34,6 +34,7 @@ class Experiment:
         dev = torch.device("cuda")
         self.model_name = model_name
         self.batch_size = batch_size
+        self.peak_memory_mb = None #added line, for tracking peak memory usage
 
         if self.model_name == "Transformer":
 
@@ -109,6 +110,8 @@ class Experiment:
             for _ in range(profile_iters):
                 graph_profiler.run(*args)
             graph_profiler.aggregate_stats()
+            self.peak_memory_mb = max(graph_profiler.avg_mem_after_mb.values())
+            # avg_mem_after_mb values are already in MB (converted in aggregate_stats)
             graph_profiler.print_stats()
 
         return gm
@@ -117,9 +120,33 @@ class Experiment:
         self.train_step(self.model, self.optimizer, self.example_inputs)
         print("Successful.")
 
-
 if __name__ == "__main__":
-    exp = Experiment(model_names[1], model_batch_sizes[model_names[1]])
-    exp.init_opt_states()
-    compiled_fn = compile(exp.train_step, exp.graph_transformation)
-    compiled_fn(exp.model, exp.optimizer, exp.example_inputs)
+    batch_sizes = [1, 2, 4, 8, 16, 32]
+    peak_memories = []
+
+    for bs in batch_sizes:
+        print(f"\n{'='*60}\nRunning Resnet18 with batch_size={bs}\n{'='*60}")
+        exp = Experiment("Resnet18", bs)
+        exp.init_opt_states()
+        compiled_fn = compile(exp.train_step, exp.graph_transformation)
+        compiled_fn(exp.model, exp.optimizer, exp.example_inputs)
+        peak_memories.append(exp.peak_memory_mb)
+        print(f"  -> peak memory: {exp.peak_memory_mb:.2f} MB")
+
+    # Bar chart
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    bars = ax.bar([str(bs) for bs in batch_sizes], peak_memories,
+                  color="steelblue", edgecolor="black", width=0.6)
+    ax.bar_label(bars, fmt="%.1f MB", padding=4, fontsize=9)
+    ax.set_xlabel("Mini-batch Size")
+    ax.set_ylabel("Peak GPU Memory (MB)")
+    ax.set_title("Peak GPU Memory vs Mini-batch Size\n(ResNet18, No Activation Checkpointing)")
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("peak_memory_vs_batch_size.png", dpi=150, bbox_inches="tight")
+    print("\nSaved: peak_memory_vs_batch_size.png")
+    plt.close(fig)
